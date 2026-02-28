@@ -73,6 +73,7 @@ html {
     height: 100dvh; /* Dynamic viewport height for mobile browsers */
     overflow: hidden; /* CRITICAL: Prevent ANY overflow */
     scroll-snap-align: start;
+    scroll-snap-stop: always; /* Prevent trackpad inertia from skipping slides */
     display: flex;
     flex-direction: column;
     position: relative;
@@ -556,6 +557,7 @@ Follow this structure for all presentations:
             height: 100dvh; /* Dynamic viewport height for mobile */
             padding: var(--slide-padding);
             scroll-snap-align: start;
+            scroll-snap-stop: always; /* Prevent trackpad inertia from skipping slides */
             display: flex;
             flex-direction: column;
             justify-content: center;
@@ -673,9 +675,13 @@ Every presentation should include:
 1. **SlidePresentation Class** — Main controller
    - Keyboard navigation (arrows, space)
    - Touch/swipe support
-   - Mouse wheel navigation
    - Progress bar updates
    - Navigation dots
+
+> **⚠️ No JS wheel handler** — Do NOT add a JavaScript `wheel` event handler for navigation.
+> CSS `scroll-snap-type: y mandatory` + `scroll-snap-stop: always` handles scroll pagination natively.
+> Adding a JS wheel handler causes double-pagination (the handler fires a programmatic scroll,
+> then CSS scroll-snap snaps again, advancing two slides per gesture).
 
 2. **Intersection Observer** — For scroll-triggered animations
    - Add `.visible` class when slides enter viewport
@@ -1051,8 +1057,13 @@ class TiltEffect {
 - Check that `.visible` class is being added
 
 **Scroll snap not working:**
-- Ensure `scroll-snap-type` on html/body
+- Ensure `scroll-snap-type: y mandatory` on `html`
 - Each slide needs `scroll-snap-align: start`
+- Each slide needs `scroll-snap-stop: always` (prevents trackpad inertia from skipping slides)
+
+**Double-pagination on scroll (skips two slides):**
+- Do NOT add a JS `wheel` event handler for navigation — this conflicts with CSS scroll-snap
+- CSS `scroll-snap-stop: always` handles single-slide pagination natively
 
 **Mobile issues:**
 - Disable heavy effects at 768px breakpoint
