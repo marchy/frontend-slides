@@ -2,11 +2,12 @@
 # export-pdf.sh — Export an HTML presentation to PDF
 #
 # Usage:
-#   bash scripts/export-pdf.sh <path-to-html> [output.pdf]
+#   bash scripts/export-pdf.sh [--compact] [--serve-root=<dir>] [--pdf-class=<class>] <path-to-html> [output.pdf]
 #
 # Examples:
 #   bash scripts/export-pdf.sh ./my-deck/index.html
 #   bash scripts/export-pdf.sh ./presentation.html ./presentation.pdf
+#   bash scripts/export-pdf.sh --serve-root=./my-deck ./my-deck/previews/deck.html ./deck.pdf
 #
 # What this does:
 #   1. Starts a local server to serve the HTML (fonts and assets need HTTP)
@@ -38,6 +39,8 @@ err()   { echo -e "${RED}✗${NC} $*" >&2; }
 VIEWPORT_W=1920
 VIEWPORT_H=1080
 COMPACT=false
+SERVE_ROOT=""
+PDF_CLASS=""
 
 POSITIONAL=()
 for arg in "$@"; do
@@ -46,6 +49,12 @@ for arg in "$@"; do
             COMPACT=true
             VIEWPORT_W=1280
             VIEWPORT_H=720
+            ;;
+        --serve-root=*)
+            SERVE_ROOT="${arg#*=}"
+            ;;
+        --pdf-class=*)
+            PDF_CLASS="${arg#*=}"
             ;;
         *)
             POSITIONAL+=("$arg")
@@ -57,12 +66,13 @@ set -- "${POSITIONAL[@]}"
 # ─── Input validation ─────────────────────────────────────
 
 if [[ $# -lt 1 ]]; then
-    err "Usage: bash scripts/export-pdf.sh <path-to-html> [output.pdf] [--compact]"
+    err "Usage: bash scripts/export-pdf.sh [--compact] [--serve-root=<dir>] [--pdf-class=<class>] <path-to-html> [output.pdf]"
     err ""
     err "Examples:"
     err "  bash scripts/export-pdf.sh ./my-deck/index.html"
     err "  bash scripts/export-pdf.sh ./presentation.html ./slides.pdf"
     err "  bash scripts/export-pdf.sh ./presentation.html --compact   # smaller file size"
+    err "  bash scripts/export-pdf.sh --serve-root=./my-deck ./my-deck/previews/deck.html ./deck.pdf"
     exit 1
 fi
 
@@ -119,9 +129,16 @@ ok "Node.js found"
 TEMP_DIR=$(mktemp -d)
 TEMP_SCRIPT="$TEMP_DIR/export-slides.mjs"
 
-# Figure out which directory to serve (the folder containing the HTML)
-SERVE_DIR=$(dirname "$INPUT_HTML")
-HTML_FILENAME=$(basename "$INPUT_HTML")
+# Figure out which directory to serve. By default this is the folder containing
+# the HTML. Use --serve-root when the deck references sibling folders such as
+# ../Assets from a nested Previews/ directory.
+if [[ -n "$SERVE_ROOT" ]]; then
+    SERVE_DIR=$(cd "$SERVE_ROOT" && pwd)
+    HTML_FILENAME=$(node -e "const path=require('path'); console.log(path.relative(process.argv[1], process.argv[2]).split(path.sep).join('/'))" "$SERVE_DIR" "$INPUT_HTML")
+else
+    SERVE_DIR=$(dirname "$INPUT_HTML")
+    HTML_FILENAME=$(basename "$INPUT_HTML")
+fi
 
 cat > "$TEMP_SCRIPT" << 'EXPORT_SCRIPT'
 // export-slides.mjs — Playwright script to export HTML slides to PDF
@@ -145,6 +162,7 @@ const OUTPUT_PDF = process.argv[4];
 const SCREENSHOT_DIR = process.argv[5];
 const VP_WIDTH = parseInt(process.argv[6]) || 1920;
 const VP_HEIGHT = parseInt(process.argv[7]) || 1080;
+const PDF_CLASS = process.argv[8] || '';
 
 // ─── Simple static file server ────────────────────────────
 // (We need HTTP so that Google Fonts and relative assets load correctly)
@@ -168,8 +186,9 @@ const MIME_TYPES = {
 
 const server = createServer((req, res) => {
   // Decode URL-encoded characters (e.g., %20 → space) so filenames with spaces resolve correctly
-  const decodedUrl = decodeURIComponent(req.url);
-  let filePath = join(SERVE_DIR, decodedUrl === '/' ? HTML_FILE : decodedUrl);
+  const decodedUrl = decodeURIComponent((req.url || '/').split('?')[0]);
+  const requestPath = decodedUrl === '/' ? HTML_FILE : decodedUrl.replace(/^\/+/, '');
+  let filePath = join(SERVE_DIR, requestPath);
   try {
     const content = readFileSync(filePath);
     const ext = extname(filePath).toLowerCase();
@@ -196,7 +215,13 @@ const page = await browser.newPage({
 });
 
 // Load the presentation
-await page.goto(`http://localhost:${port}/`, { waitUntil: 'networkidle' });
+await page.goto(`http://localhost:${port}/${HTML_FILE}`, { waitUntil: 'networkidle' });
+
+if (PDF_CLASS) {
+  await page.evaluate((className) => {
+    document.documentElement.classList.add(...className.split(/\s+/).filter(Boolean));
+  }, PDF_CLASS);
+}
 
 // Wait for fonts to load
 await page.evaluate(() => document.fonts.ready);
@@ -386,7 +411,7 @@ if [[ "$COMPACT" == "true" ]]; then
     info "Using compact mode (1280×720) for smaller file size"
 fi
 
-node "$TEMP_SCRIPT" "$SERVE_DIR" "$HTML_FILENAME" "$OUTPUT_PDF" "$SCREENSHOT_DIR" "$VIEWPORT_W" "$VIEWPORT_H" || {
+node "$TEMP_SCRIPT" "$SERVE_DIR" "$HTML_FILENAME" "$OUTPUT_PDF" "$SCREENSHOT_DIR" "$VIEWPORT_W" "$VIEWPORT_H" "$PDF_CLASS" || {
     err "PDF export failed."
     rm -rf "$TEMP_DIR"
     exit 1
